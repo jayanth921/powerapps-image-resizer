@@ -1,115 +1,76 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <meta charset="UTF-8">
-  <title>Power Apps Image Resizer & Uploader</title>
+  <meta charset="utf-8">
+  <title>Image Resizer</title>
 </head>
 <body>
-  <script>
-    // Listen for messages from Power Apps
-    window.addEventListener("message", async function (event) {
-      const { imageBase64, fileName, roomKey } = event.data || {};
-      if (!imageBase64 || !fileName || !roomKey) {
-        sendStatusToPowerApps({
-          fileName,
-          status: "❌ Missing data for upload.",
-          success: false
-        });
-        return;
-      }
+<script>
+window.addEventListener("message", async (event) => {
+    if (!event.data || !event.data.images) return;
 
-      try {
-        // Resize if needed
-        const resizedBlob = await resizeImage(imageBase64);
+    const processedImages = [];
 
-        if (!resizedBlob) {
-          sendStatusToPowerApps({
-            fileName,
-            status: `❌ Resize failed for ${fileName} (> 2MB)`,
-            success: false
-          });
-          return;
-        }
+    for (let imgData of event.data.images) {
+        const base64 = imgData.base64;
+        const fileName = imgData.name;
 
-        // Prepare form data for upload
-        const formData = new FormData();
-        formData.append("file", resizedBlob, fileName);
-        formData.append("roomKey", roomKey);
-
-        // Upload to API
-        const response = await fetch("https://your-api-endpoint/upload", {
-          method: "POST",
-          body: formData
-        });
-
-        if (response.ok) {
-          sendStatusToPowerApps({
-            fileName,
-            status: `✅ ${fileName} uploaded successfully for room key: ${roomKey}`,
-            success: true
-          });
+        // Convert base64 to Blob
+        const blob = base64ToBlob(base64);
+        
+        // If >2MB, resize
+        if (blob.size > 2 * 1024 * 1024) {
+            const resizedBase64 = await resizeImage(base64, fileName);
+            processedImages.push({ name: fileName, base64: resizedBase64 });
         } else {
-          sendStatusToPowerApps({
-            fileName,
-            status: `❌ Upload failed for ${fileName} (HTTP ${response.status})`,
-            success: false
-          });
+            processedImages.push({ name: fileName, base64: base64 });
         }
-      } catch (err) {
-        console.error(err);
-        sendStatusToPowerApps({
-          fileName,
-          status: `❌ Error uploading ${fileName}`,
-          success: false
-        });
-      }
-    });
+    }
 
-    // Function to resize an image if over 2MB
-    async function resizeImage(base64Str) {
-      return new Promise((resolve) => {
+    // Send processed images back to Power Apps
+    window.parent.postMessage({ processedImages }, "*");
+});
+
+function base64ToBlob(base64) {
+    const byteString = atob(base64.split(',')[1]);
+    const mimeString = base64.split(',')[0].split(':')[1].split(';')[0];
+    const ab = new ArrayBuffer(byteString.length);
+    const ia = new Uint8Array(ab);
+    for (let i = 0; i < byteString.length; i++) {
+        ia[i] = byteString.charCodeAt(i);
+    }
+    return new Blob([ab], { type: mimeString });
+}
+
+function resizeImage(base64Str, fileName) {
+    return new Promise((resolve) => {
         const img = new Image();
-        img.onload = async () => {
-          let width = img.width;
-          let height = img.height;
-          const maxSize = 1024;
-
-          // Scale down dimensions if needed
-          if (width > maxSize || height > maxSize) {
-            if (width > height) {
-              height = height * (maxSize / width);
-              width = maxSize;
-            } else {
-              width = width * (maxSize / height);
-              height = maxSize;
-            }
-          }
-
-          const canvas = document.createElement("canvas");
-          canvas.width = width;
-          canvas.height = height;
-          const ctx = canvas.getContext("2d");
-          ctx.drawImage(img, 0, 0, width, height);
-
-          let quality = 0.9;
-          let blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', quality));
-
-          // Reduce quality until <= 2MB
-          while (blob.size > 2 * 1024 * 1024 && quality > 0.1) {
-            quality -= 0.1;
-            blob = await new Promise(r => canvas.toBlob(r, 'image/jpeg', quality));
-          }
-
-          resolve(blob.size <= 2 * 1024 * 1024 ? blob : null);
-        };
         img.src = base64Str;
-      });
-    }
+        img.onload = () => {
+            const canvas = document.createElement('canvas');
+            const ctx = canvas.getContext('2d');
 
-    // Send status back to Power Apps
-    function sendStatusToPowerApps(messageObj) {
-      window.parent.postMessage(messageObj, "*");
-    }
-  </script>
+            let width = img.width;
+            let height = img.height;
+
+            // Keep aspect ratio, shrink dimensions until < 2MB
+            let quality = 0.9;
+            canvas.width = width;
+            canvas.height = height;
+            ctx.drawImage(img, 0, 0, width, height);
+
+            let result = canvas.toDataURL('image/jpeg', quality);
+            let resultBlob = base64ToBlob(result);
+
+            while (resultBlob.size > 2 * 1024 * 1024 && quality > 0.1) {
+                quality -= 0.05;
+                result = canvas.toDataURL('image/jpeg', quality);
+                resultBlob = base64ToBlob(result);
+            }
+            resolve(result);
+        };
+    });
+}
+</script>
 </body>
 </html>
